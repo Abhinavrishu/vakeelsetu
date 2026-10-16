@@ -1,14 +1,31 @@
-const mongoose = require('mongoose');
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { Pool } from 'pg';
+import * as schema from '../database/schema.js';
 
-const connectDB = async () => {
+let db;
+
+export const connectDB = async () => {
   try {
-    const conn = await mongoose.connect(process.env.MONGO_URI);
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+    });
 
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
+    // Test the connection
+    const client = await pool.connect();
+    console.log(`PostgreSQL Connected: ${client.query ? 'OK' : 'FAIL'}`);
+    client.release();
+
+    db = drizzle(pool, { schema });
+    return db;
   } catch (error) {
-    console.error(`MongoDB Connection Failed: ${error.message}`);
-    process.exit(1); // Exit process with failure
+    console.error(`PostgreSQL Connection Failed: ${error.message}`);
+    process.exit(1);
   }
 };
 
-module.exports = connectDB;
+export const getDB = () => {
+  if (!db) {
+    throw new Error('Database not initialized. Call connectDB() first.');
+  }
+  return db;
+};

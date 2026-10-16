@@ -11,6 +11,10 @@ const LawyerDashboard = () => {
 
   const lawyerId = "1"; // Change this to "2" to test other lawyer
 
+  const openChat = () => {
+    navigate(`/chat/client-1?role=lawyer&userId=${lawyerId}&selfName=Lawyer&peerName=Demo%20Client`);
+  };
+
   useEffect(() => {
     socket.on("receive-offer", ({ offer, callerId, targetLawyerId }) => {
       if (targetLawyerId === lawyerId) {
@@ -70,6 +74,13 @@ const LawyerDashboard = () => {
     <div className="min-h-screen flex items-center justify-center bg-gray-100">
       <div className="text-center">
         <h1 className="text-3xl font-bold mb-6">👨‍⚖️ Lawyer Dashboard (ID: {lawyerId})</h1>
+
+        <button
+          onClick={openChat}
+          className="mb-4 bg-blue-600 text-white px-4 py-2 rounded"
+        >
+          Open Demo Chat
+        </button>
 
         {!incomingCall && (
           <p className="text-lg text-gray-600">Waiting for incoming calls...</p>

@@ -13,6 +13,7 @@ const LawyerCard = ({ lawyer, onConnect }) => {
       <p>Status: {lawyer.verified ? "✅ Verified" : "❌ Pending"}</p>
       <div className="flex gap-2 mt-3">
         <button onClick={() => onConnect("audio", lawyer.id)} className="bg-green-500 text-white px-4 py-1 rounded">Call</button>
+        <button onClick={() => onConnect("chat", lawyer.id)} className="bg-slate-800 text-white px-4 py-1 rounded">Chat</button>
       </div>
     </div>
   );

@@ -18,7 +18,7 @@ const ClientLandingPage = () => {
         const verifiedLawyers = dummyLawyers.filter((lawyer) => lawyer.verified);
         setLawyers(verifiedLawyers);
       } catch (err) {
-        setError("Failed to load lawyers.");
+        setError(err.message || "Failed to load lawyers.");
       } finally {
         setLoading(false);
       }
@@ -35,8 +35,8 @@ const ClientLandingPage = () => {
   const categories = [...new Set(lawyers.map((l) => l.category))];
 
   const handleConnect = (type, lawyerId) => {
-
-   if (type === "audio") navigate(`/call/audio/${lawyerId}`);
+    if (type === "audio") navigate(`/call/audio/${lawyerId}`);
+    if (type === "chat") navigate(`/chat/${lawyerId}?role=client&userId=client-1&selfName=Client&peerName=${encodeURIComponent(lawyers.find((lawyer) => lawyer.id === lawyerId)?.name || 'Lawyer')}`);
 
   };
 
