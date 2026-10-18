@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { signIn } from "../api/authApi";
+import { saveEncryptionIdentity, signIn } from "../api/authApi";
+import { createDeviceEncryptionIdentity, getDeviceEncryptionIdentity, saveDeviceEncryptionIdentity } from "../services/e2eCrypto";
 
 const SignInPage = () => {
   const navigate = useNavigate();
@@ -21,9 +22,23 @@ const SignInPage = () => {
 
     try {
       const data = await signIn(form);
+      let session = data;
+      let identity = await getDeviceEncryptionIdentity(data.user.id);
 
-      login(data);
-      navigate(data.user?.role === "lawyer" ? "/lawyerpage" : "/");
+      // Old accounts and new browsers get a fresh device-only key at sign-in.
+      // The API receives only the corresponding public key.
+      if (!identity) {
+        identity = await createDeviceEncryptionIdentity();
+        const updatedUser = await saveEncryptionIdentity({ encryptionPublicKey: identity.encryptionPublicKey }, data.accessToken);
+        await saveDeviceEncryptionIdentity(data.user.id, identity);
+        session = { ...data, user: updatedUser };
+      } else if (!data.user.encryptionPublicKey) {
+        const updatedUser = await saveEncryptionIdentity({ encryptionPublicKey: identity.encryptionPublicKey }, data.accessToken);
+        session = { ...data, user: updatedUser };
+      }
+
+      login(session);
+      navigate(session.user?.role === "lawyer" ? "/lawyerpage" : "/");
     } catch (signInError) {
       setError(signInError.message || "Unable to sign in");
     } finally {

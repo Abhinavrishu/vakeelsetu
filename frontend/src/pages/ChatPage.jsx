@@ -3,7 +3,8 @@ import { useParams, useSearchParams } from "react-router-dom";
 import socket from "../socket";
 import { getChatHistory, markChatRead, sendChatMessage } from "../api/chatApi";
 import { getEncryptionPublicKey, saveEncryptionIdentity } from "../api/authApi";
-import { createDeviceEncryptionIdentity, decryptChatContent, downloadDecryptedFile, encryptChatContent, encryptChatFile, getDeviceEncryptionIdentity, saveDeviceEncryptionIdentity } from "../services/e2eCrypto";
+import { createDeviceEncryptionIdentity, decryptChatContent, downloadDecryptedFile, encryptChatContent, encryptChatFile, encryptFileReference, getDeviceEncryptionIdentity, saveDeviceEncryptionIdentity } from "../services/e2eCrypto";
+import { fetchEncryptedAttachment, uploadEncryptedAttachment } from "../services/encryptedFileStorage";
 import { useAuth } from "../context/AuthContext";
 
 const ChatPage = () => {
@@ -152,7 +153,7 @@ const ChatPage = () => {
     }
 
     try {
-      if (!privateKey || !peerPublicKey) throw new Error("Unlock encrypted chat with your recovery passphrase first.");
+      if (!privateKey || !peerPublicKey) throw new Error("End-to-end encryption is still preparing. Please wait a moment.");
       const data = await sendChatMessage({
         clientId,
         lawyerId,
@@ -184,9 +185,11 @@ const ChatPage = () => {
       return;
     }
     try {
-      if (!privateKey || !peerPublicKey) throw new Error("Unlock encrypted chat with your recovery passphrase first.");
+      if (!privateKey || !peerPublicKey) throw new Error("End-to-end encryption is still preparing. Please wait a moment.");
       setSendingFile(true);
-      const content = await encryptChatFile(selectedFile, privateKey, peerPublicKey, conversationKey);
+      const encryptedFile = await encryptChatFile(selectedFile, privateKey, peerPublicKey, conversationKey);
+      const storageUrl = await uploadEncryptedAttachment(encryptedFile.ciphertext);
+      const content = await encryptFileReference(encryptedFile, storageUrl, privateKey, peerPublicKey, conversationKey);
       const data = await sendChatMessage({ clientId, lawyerId, senderId: userId, senderRole: role, content }, accessToken);
       const savedMessage = { ...data.message, content: await decryptChatContent(data.message.content, privateKey, peerPublicKey, conversationKey) };
       setMessages((current) => [...current.filter((item) => item.id !== savedMessage.id), savedMessage]);
@@ -213,7 +216,7 @@ const ChatPage = () => {
         }
         const keyData = await getEncryptionPublicKey(peerId, accessToken);
         if (!keyData.encryptionPublicKey) {
-          throw new Error("This person needs to open chat once on their device before encrypted chat can start.");
+          throw new Error("This person needs to sign in once on their device before encrypted chat can start.");
         }
         if (!cancelled) {
           setPrivateKey(identity.privateKey);
@@ -268,7 +271,11 @@ const ChatPage = () => {
                 return (
                   <div key={message.id} className={`message ${isOwnMessage ? 'message--own' : 'message--other'}`}>
                     {typeof message.content === "object" && message.content.type === "file" ? (
-                      <button type="button" className="btn btn-secondary" onClick={() => downloadDecryptedFile(message.content)} disabled={!message.content.data}>
+                      <button type="button" className="btn btn-secondary" onClick={() => {
+                        fetchEncryptedAttachment(message.content.storageUrl)
+                          .then((ciphertext) => downloadDecryptedFile(message.content, ciphertext, privateKey, peerPublicKey, conversationKey))
+                          .catch((downloadError) => setError(downloadError.message || "Unable to download encrypted file."));
+                      }} disabled={!privateKey || !peerPublicKey || !message.content.storageUrl}>
                         Download {message.content.name} ({Math.ceil(message.content.size / 1024)} KB)
                       </button>
                     ) : <p className="message-text">{message.content}</p>}

@@ -84,18 +84,31 @@ export const decryptChatContent = async (content, privateKey, senderPublicKey, c
 };
 
 export const encryptChatFile = async (file, privateKey, recipientPublicKey, conversationId) => {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  return encryptChatPayload({
-    type: "file",
+  const fileIv = crypto.getRandomValues(new Uint8Array(12));
+  const bytes = await file.arrayBuffer();
+  const key = await conversationKey(privateKey, recipientPublicKey);
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv: fileIv, additionalData: encoder.encode(`${conversationId}:file`) }, key, bytes);
+  return {
+    ciphertext: new Blob([ciphertext], { type: "application/octet-stream" }),
+    fileIv: toBase64(fileIv),
     name: file.name,
     mimeType: file.type || "application/octet-stream",
     size: file.size,
-    data: toBase64(bytes),
-  }, privateKey, recipientPublicKey, conversationId);
+  };
 };
 
-export const downloadDecryptedFile = (attachment) => {
-  const bytes = fromBase64(attachment.data);
+export const encryptFileReference = (file, storageUrl, privateKey, recipientPublicKey, conversationId) => {
+  const metadata = { fileIv: file.fileIv, name: file.name, mimeType: file.mimeType, size: file.size };
+  return encryptChatPayload({ type: "file", ...metadata, storageUrl }, privateKey, recipientPublicKey, conversationId);
+};
+
+export const downloadDecryptedFile = async (attachment, encryptedBytes, privateKey, senderPublicKey, conversationId) => {
+  const raw = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: fromBase64(attachment.fileIv), additionalData: encoder.encode(`${conversationId}:file`) },
+    await conversationKey(privateKey, senderPublicKey),
+    encryptedBytes
+  );
+  const bytes = new Uint8Array(raw);
   const url = URL.createObjectURL(new Blob([bytes], { type: attachment.mimeType }));
   const link = document.createElement("a");
   link.href = url;
