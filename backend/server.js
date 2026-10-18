@@ -2,24 +2,29 @@ import express from "express";
 import http from "http";
 import cors from "cors";
 import dotenv from "dotenv";
+import jwt from "jsonwebtoken";
 import { Server as SocketIOServer } from "socket.io";
 import { connectDB } from './config/db.js';
 import authRouter from './utils/auth.js';
 import chatRouter from './utils/chat.js';
+import lawyersRouter from './utils/lawyers.js';
 
 dotenv.config();
 
 const app = express();
 const corsOptions = {
   origin: "*",
-  methods: ["GET", "POST", "PATCH"],
-  allowedHeaders: ["Content-Type"],
+  methods: ["GET", "POST", "PATCH", "PUT"],
+  allowedHeaders: ["Content-Type", "Authorization"],
 };
 
 app.use(cors(corsOptions));
-app.use(express.json());
+// Attachments are encrypted in the browser and stored as ciphertext envelopes.
+// The limit includes base64 expansion, so it safely supports the 5 MB UI limit.
+app.use(express.json({ limit: "8mb" }));
 app.use('/api/auth', authRouter);
 app.use('/api/chat', chatRouter);
+app.use('/api/lawyers', lawyersRouter);
 const server = http.createServer(app);
 const io = new SocketIOServer(server, {
   cors: {
@@ -34,41 +39,26 @@ app.set("io", io);
 app.use(express.static("public"));
 
 // Socket.io event handling
+io.use((socket, next) => {
+  try {
+    const decoded = jwt.verify(socket.handshake.auth?.token, process.env.JWT_ACCESS_SECRET);
+    if (decoded.type !== "access") throw new Error("Invalid token type");
+    socket.data.userId = decoded.id;
+    next();
+  } catch {
+    next(new Error("Unauthorized socket connection"));
+  }
+});
+
 io.on("connection", (socket) => {
   console.log("A user connected");
 
   socket.on("join-user", ({ userId }) => {
-    if (!userId) {
+    if (!userId || userId !== socket.data.userId) {
       return;
     }
 
-    socket.join(userId);
-    socket.data.userId = userId;
-  });
-
-  socket.on("send-offer", (data) => {
-    console.log("Received offer from client:", data);
-    io.to(data.lawyerId).emit("receive-offer", { offer: data.offer, callerId: data.callerId });
-  });
-
-  socket.on("send-answer", (data) => {
-    console.log("Received answer from lawyer:", data);
-    io.to(data.callerId).emit("receive-answer", data.answer);
-  });
-
-  socket.on("send-ice-candidate", (data) => {
-    console.log("Received ICE candidate from client:", data);
-    io.to(data.lawyerId).emit("receive-ice-candidate", data.candidate);
-  });
-
-  socket.on("send-ice-candidate-from-lawyer", (data) => {
-    console.log("Received ICE candidate from lawyer:", data);
-    io.to(data.clientId).emit("receive-ice-candidate", data.candidate);
-  });
-
-  socket.on("send-decline", (data) => {
-    console.log("Call declined by lawyer:", data);
-    io.to(data.callerId).emit("call-declined", { message: "Call declined by lawyer" });
+    socket.join(socket.data.userId);
   });
 
   socket.on("disconnect", () => {

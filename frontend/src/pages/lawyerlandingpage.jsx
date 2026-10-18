@@ -1,112 +1,63 @@
 // src/pages/LawyerDashboard.jsx
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import socket from "../socket";
+import { useAuth } from "../context/AuthContext";
+import { getChatConversations } from "../api/chatApi";
 
 const LawyerDashboard = () => {
-  const [incomingCall, setIncomingCall] = useState(false);
-  const [callerId, setCallerId] = useState(null);
-  const [offer, setOffer] = useState(null);
+  const { user, accessToken, logout } = useAuth();
   const navigate = useNavigate();
+  const [conversations, setConversations] = useState([]);
 
-  const lawyerId = "1"; // Change this to "2" to test other lawyer
-
-  const openChat = () => {
-    navigate(`/chat/client-1?role=lawyer&userId=${lawyerId}&selfName=Lawyer&peerName=Demo%20Client`);
-  };
+  const lawyerId = user?.id;
+  const lawyerName = user?.name || "Lawyer";
 
   useEffect(() => {
-    socket.on("receive-offer", ({ offer, callerId, targetLawyerId }) => {
-      if (targetLawyerId === lawyerId) {
-        console.log("📞 Incoming call from:", callerId);
-        setIncomingCall(true);
-        setCallerId(callerId);
-        setOffer(offer);
-      }
-    });
+    if (!accessToken) return;
+    getChatConversations(accessToken).then((data) => setConversations(data.conversations || [])).catch(() => setConversations([]));
+  }, [accessToken]);
 
-    return () => {
-      socket.off("receive-offer");
-    };
-  }, [lawyerId]);
-
-  const acceptCall = async () => {
-    const peer = new RTCPeerConnection({
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
-    });
-
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
-
-    peer.onicecandidate = (event) => {
-      if (event.candidate) {
-        socket.emit("send-ice-candidate-from-lawyer", {
-          clientId: callerId,
-          candidate: event.candidate,
-        });
-      }
-    };
-
-    peer.ontrack = (event) => {
-      const remoteAudio = document.getElementById("remoteAudio");
-      if (remoteAudio) {
-        remoteAudio.srcObject = event.streams[0];
-      }
-    };
-
-    await peer.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await peer.createAnswer();
-    await peer.setLocalDescription(answer);
-
-    socket.emit("send-answer", { callerId, answer });
-
-    navigate(`/audio-call/${callerId}`);
+  const openChat = (clientId, clientName) => {
+    navigate(`/chat/${clientId}?role=lawyer&userId=${encodeURIComponent(lawyerId)}&selfName=${encodeURIComponent(lawyerName)}&peerName=${encodeURIComponent(clientName)}`);
   };
 
-  const rejectCall = () => {
-    socket.emit("send-decline", { callerId });
-    setIncomingCall(false);
-    setCallerId(null);
-    setOffer(null);
+  const handleSignOut = () => {
+    logout();
+    navigate("/signin");
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-100">
-      <div className="text-center">
-        <h1 className="text-3xl font-bold mb-6">👨‍⚖️ Lawyer Dashboard (ID: {lawyerId})</h1>
+    <div className="page dashboard-shell">
+      <div className="container">
+        <section className="dashboard-panel">
+          <div className="dashboard-hero">
+            <div>
+              <div className="dashboard-eyebrow">Lawyer console</div>
+              <h1 className="dashboard-title">In one place: chats and client activity.</h1>
+              <p className="dashboard-copy">
+                Keep client conversations organized and respond when a client is ready with details.
+              </p>
+            </div>
 
-        <button
-          onClick={openChat}
-          className="mb-4 bg-blue-600 text-white px-4 py-2 rounded"
-        >
-          Open Demo Chat
-        </button>
-
-        {!incomingCall && (
-          <p className="text-lg text-gray-600">Waiting for incoming calls...</p>
-        )}
-
-        {incomingCall && (
-          <div className="bg-white p-6 rounded-lg shadow-md">
-            <h2 className="text-xl font-semibold mb-4">
-              📞 Incoming Call from: <span className="font-mono">{callerId}</span>
-            </h2>
-            <div className="flex justify-center gap-4">
-              <button
-                onClick={acceptCall}
-                className="bg-green-500 text-white px-4 py-2 rounded"
-              >
-                Accept
+            <div className="hero-actions">
+              <button onClick={() => navigate("/settings/profile")} className="btn btn-secondary">
+                Profile settings
               </button>
-              <button
-                onClick={rejectCall}
-                className="bg-red-500 text-white px-4 py-2 rounded"
-              >
-                Reject
+              <button onClick={handleSignOut} className="btn btn-danger">
+                Sign out
               </button>
             </div>
           </div>
-        )}
+
+          <div className="dashboard-card">
+            <div className="panel-title">Client messages</div>
+            {conversations.length === 0 ? <p className="dashboard-copy">Client conversations will appear here after a client writes to you.</p> : conversations.map((conversation) => (
+              <button key={conversation.peerId} onClick={() => openChat(conversation.peerId, conversation.peerName)} className="btn btn-secondary" style={{ marginRight: 8, marginTop: 8 }}>
+                Open chat with {conversation.peerName}
+              </button>
+            ))}
+          </div>
+        </section>
       </div>
     </div>
   );

@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import socket from "../socket";
-
-const API_BASE = "http://localhost:5000/api/chat";
+import { getChatHistory, markChatRead, sendChatMessage } from "../api/chatApi";
+import { getEncryptionPublicKey, saveEncryptionIdentity } from "../api/authApi";
+import { createDeviceEncryptionIdentity, decryptChatContent, downloadDecryptedFile, encryptChatContent, encryptChatFile, getDeviceEncryptionIdentity, saveDeviceEncryptionIdentity } from "../services/e2eCrypto";
+import { useAuth } from "../context/AuthContext";
 
 const ChatPage = () => {
   const { peerId } = useParams();
+  const { user, accessToken, updateUser } = useAuth();
   const [searchParams] = useSearchParams();
-  const role = searchParams.get("role") || "client";
-  const userId = searchParams.get("userId") || (role === "lawyer" ? "lawyer-1" : "client-1");
-  const selfName = searchParams.get("selfName") || (role === "lawyer" ? "Lawyer" : "You");
+  const role = user?.role || searchParams.get("role") || "client";
+  const userId = user?.id || searchParams.get("userId") || "";
+  const selfName = user?.name || searchParams.get("selfName") || (role === "lawyer" ? "Lawyer" : "You");
   const peerName = searchParams.get("peerName") || (role === "lawyer" ? "Client" : "Lawyer");
 
   const clientId = role === "client" ? userId : peerId;
@@ -19,9 +22,18 @@ const ChatPage = () => {
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [privateKey, setPrivateKey] = useState(null);
+  const [peerPublicKey, setPeerPublicKey] = useState("");
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [sendingFile, setSendingFile] = useState(false);
   const endRef = useRef(null);
 
   const conversationKey = useMemo(() => `${clientId}:${lawyerId}`, [clientId, lawyerId]);
+
+  const decryptMessages = useCallback(async (items, key, peerKey) => Promise.all(items.map(async (message) => {
+    try { return { ...message, content: await decryptChatContent(message.content, key, peerKey, conversationKey) }; }
+    catch { return { ...message, content: "Unable to decrypt this message." }; }
+  })), [conversationKey]);
 
   const scrollToBottom = () => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -32,14 +44,8 @@ const ChatPage = () => {
       return;
     }
 
-    await fetch(`${API_BASE}/read`, {
-      method: "PATCH",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ clientId, lawyerId, readerId: userId }),
-    });
-  }, [clientId, lawyerId, userId]);
+    await markChatRead({ clientId, lawyerId, readerId: userId, accessToken });
+  }, [clientId, lawyerId, userId, accessToken]);
 
   const loadHistory = useCallback(async () => {
     if (!clientId || !lawyerId) {
@@ -50,16 +56,9 @@ const ChatPage = () => {
 
     setLoading(true);
     try {
-      const response = await fetch(
-        `${API_BASE}/history?clientId=${encodeURIComponent(clientId)}&lawyerId=${encodeURIComponent(lawyerId)}&viewerId=${encodeURIComponent(userId)}`
-      );
-      const data = await response.json();
+      const data = await getChatHistory({ clientId, lawyerId, accessToken });
 
-      if (!response.ok) {
-        throw new Error(data.msg || "Failed to load chat history");
-      }
-
-      setMessages(data.messages || []);
+      setMessages(privateKey && peerPublicKey ? await decryptMessages(data.messages || [], privateKey, peerPublicKey) : data.messages || []);
       setError("");
 
       if ((data.unreadCount || 0) > 0) {
@@ -70,11 +69,15 @@ const ChatPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [clientId, lawyerId, markConversationRead, userId]);
+  }, [clientId, lawyerId, markConversationRead, accessToken, privateKey, peerPublicKey, decryptMessages]);
 
   useEffect(() => {
+    if (!accessToken || !userId) return undefined;
+    socket.auth = { token: accessToken };
+    socket.connect();
     socket.emit("join-user", { userId });
-  }, [userId]);
+    return () => socket.disconnect();
+  }, [accessToken, userId]);
 
   useEffect(() => {
     loadHistory();
@@ -86,13 +89,18 @@ const ChatPage = () => {
         return;
       }
 
-      setMessages((currentMessages) => {
+      const addIncoming = async () => {
+        const displayMessage = privateKey && peerPublicKey
+          ? { ...message, content: await decryptChatContent(message.content, privateKey, peerPublicKey, conversationKey) }
+          : message;
+        setMessages((currentMessages) => {
         if (currentMessages.some((item) => item.id === message.id)) {
-          return currentMessages.map((item) => (item.id === message.id ? message : item));
+            return currentMessages.map((item) => (item.id === message.id ? displayMessage : item));
         }
-
-        return [...currentMessages, message];
-      });
+          return [...currentMessages, displayMessage];
+        });
+      };
+      addIncoming().catch(() => setError("Unable to decrypt this message."));
 
       if (message.recipientId === userId) {
         markConversationRead();
@@ -118,7 +126,7 @@ const ChatPage = () => {
       socket.off("chat:message", handleIncomingMessage);
       socket.off("chat:read", handleReadReceipt);
     };
-  }, [clientId, lawyerId, markConversationRead, userId]);
+  }, [clientId, lawyerId, markConversationRead, userId, privateKey, peerPublicKey, conversationKey]);
 
   useEffect(() => {
     scrollToBottom();
@@ -144,27 +152,17 @@ const ChatPage = () => {
     }
 
     try {
-      const response = await fetch(`${API_BASE}/messages`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          clientId,
-          lawyerId,
-          senderId: userId,
-          senderRole: role,
-          content: trimmedDraft,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.msg || "Failed to send message");
-      }
+      if (!privateKey || !peerPublicKey) throw new Error("Unlock encrypted chat with your recovery passphrase first.");
+      const data = await sendChatMessage({
+        clientId,
+        lawyerId,
+        senderId: userId,
+        senderRole: role,
+        content: await encryptChatContent(trimmedDraft, privateKey, peerPublicKey, conversationKey),
+      }, accessToken);
 
       const savedMessage = data.message;
+      savedMessage.content = trimmedDraft;
       setMessages((currentMessages) => {
         if (currentMessages.some((item) => item.id === savedMessage.id)) {
           return currentMessages.map((item) => (item.id === savedMessage.id ? savedMessage : item));
@@ -178,85 +176,145 @@ const ChatPage = () => {
     }
   };
 
+  const handleFileSend = async (event) => {
+    event.preventDefault();
+    if (!selectedFile) return;
+    if (selectedFile.size > 5 * 1024 * 1024) {
+      setError("Encrypted attachments are limited to 5 MB.");
+      return;
+    }
+    try {
+      if (!privateKey || !peerPublicKey) throw new Error("Unlock encrypted chat with your recovery passphrase first.");
+      setSendingFile(true);
+      const content = await encryptChatFile(selectedFile, privateKey, peerPublicKey, conversationKey);
+      const data = await sendChatMessage({ clientId, lawyerId, senderId: userId, senderRole: role, content }, accessToken);
+      const savedMessage = { ...data.message, content: await decryptChatContent(data.message.content, privateKey, peerPublicKey, conversationKey) };
+      setMessages((current) => [...current.filter((item) => item.id !== savedMessage.id), savedMessage]);
+      setSelectedFile(null);
+      event.currentTarget.reset();
+    } catch (fileError) {
+      setError(fileError.message || "Failed to send encrypted file");
+    } finally {
+      setSendingFile(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!userId || !accessToken || !peerId) return undefined;
+    let cancelled = false;
+    const loadDeviceEncryption = async () => {
+      try {
+        let identity = await getDeviceEncryptionIdentity(userId);
+        if (!identity) {
+          identity = await createDeviceEncryptionIdentity();
+          const updatedUser = await saveEncryptionIdentity({ encryptionPublicKey: identity.encryptionPublicKey }, accessToken);
+          await saveDeviceEncryptionIdentity(userId, identity);
+          updateUser(updatedUser);
+        }
+        const keyData = await getEncryptionPublicKey(peerId, accessToken);
+        if (!keyData.encryptionPublicKey) {
+          throw new Error("This person needs to open chat once on their device before encrypted chat can start.");
+        }
+        if (!cancelled) {
+          setPrivateKey(identity.privateKey);
+          setPeerPublicKey(keyData.encryptionPublicKey);
+        }
+      } catch (deviceError) {
+        if (!cancelled) setError(deviceError.message || "Unable to load device encryption.");
+      }
+    };
+    loadDeviceEncryption();
+    return () => { cancelled = true; };
+  }, [userId, accessToken, peerId, user?.encryptionPublicKey, updateUser]);
+
   return (
-    <div className="min-h-screen bg-slate-100 px-4 py-6 md:px-8">
-      <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
-        <header className="border-b border-slate-200 bg-gradient-to-r from-slate-900 via-slate-800 to-blue-900 px-6 py-5 text-white">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="text-xs uppercase tracking-[0.35em] text-slate-300">Saved chat history</p>
-              <h1 className="mt-2 text-2xl font-semibold">{peerName}</h1>
-              <p className="text-sm text-slate-300">
-                {selfName} chatting with {peerName} · Conversation {conversationKey}
-              </p>
+    <div className="page chat-shell">
+      <div className="container">
+        <section className="chat-panel">
+          <header className="chat-header">
+            <div className="chat-header-row">
+              <div>
+                <div className="chat-eyebrow">Saved chat history</div>
+                <h1 className="chat-title">{peerName}</h1>
+                <p className="chat-copy">
+                  {selfName} chatting with {peerName} · Conversation {conversationKey}
+                </p>
+              </div>
+              <div className="chat-badge">
+                {role === "lawyer" ? "Lawyer view" : "Client view"}
+              </div>
             </div>
-            <div className="rounded-full border border-white/20 px-4 py-2 text-sm text-slate-200">
-              {role === "lawyer" ? "Lawyer view" : "Client view"}
-            </div>
-          </div>
-        </header>
+            {!privateKey && <p className="chat-copy">Preparing end-to-end encryption on this device…</p>}
+          </header>
 
-        <main className="flex-1 overflow-y-auto bg-[linear-gradient(180deg,#f8fafc_0%,#eef2ff_100%)] px-4 py-5 md:px-6">
-          {error && <div className="mb-4 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-600">{error}</div>}
+          <main className="chat-body">
+            {error && <div className="empty-state" style={{ marginBottom: 18, textAlign: 'left' }}>{error}</div>}
 
-          {loading ? (
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-white/80 px-4 py-10 text-center text-slate-500">
-              Loading chat history...
-            </div>
-          ) : messages.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-white/80 px-4 py-10 text-center text-slate-500">
-              No messages yet. Start the conversation and the history will be saved here.
-            </div>
-          ) : (
-            <div className="flex flex-col gap-3">
+            {loading ? (
+              <div className="empty-state">
+                <h3 className="empty-title">Loading conversation</h3>
+                <p className="empty-copy">We are fetching your messages and read receipts.</p>
+              </div>
+            ) : messages.length === 0 ? (
+              <div className="empty-state">
+                <h3 className="empty-title">No messages yet</h3>
+                <p className="empty-copy">Start the conversation and the history will be saved here.</p>
+              </div>
+            ) : (
+              <div className="message-list">
               {messages.map((message) => {
                 const isOwnMessage = message.senderId === userId;
 
                 return (
-                  <div key={message.id} className={`flex ${isOwnMessage ? "justify-end" : "justify-start"}`}>
-                    <div
-                      className={`max-w-[78%] rounded-3xl px-4 py-3 shadow-sm md:max-w-[64%] ${
-                        isOwnMessage
-                          ? "rounded-br-md bg-slate-900 text-white"
-                          : "rounded-bl-md border border-slate-200 bg-white text-slate-900"
-                      }`}
-                    >
-                      <p className="whitespace-pre-wrap text-sm leading-6">{message.content}</p>
-                      <div className={`mt-2 flex items-center gap-2 text-[11px] ${isOwnMessage ? "justify-end text-slate-300" : "justify-start text-slate-400"}`}>
+                  <div key={message.id} className={`message ${isOwnMessage ? 'message--own' : 'message--other'}`}>
+                    {typeof message.content === "object" && message.content.type === "file" ? (
+                      <button type="button" className="btn btn-secondary" onClick={() => downloadDecryptedFile(message.content)} disabled={!message.content.data}>
+                        Download {message.content.name} ({Math.ceil(message.content.size / 1024)} KB)
+                      </button>
+                    ) : <p className="message-text">{message.content}</p>}
+                    <div className="message-meta">
                         <span>{formatTime(message.createdAt)}</span>
                         {isOwnMessage && (
-                          <span className={message.isRead ? "text-sky-400" : "text-slate-400"}>
+                          <span className={`message-tick ${message.isRead ? 'message-tick--read' : 'message-tick--unread'}`}>
                             {message.isRead ? "✓✓" : "✓"}
                           </span>
                         )}
-                      </div>
                     </div>
                   </div>
                 );
               })}
               <div ref={endRef} />
-            </div>
-          )}
-        </main>
+              </div>
+            )}
+          </main>
 
-        <form onSubmit={handleSend} className="border-t border-slate-200 bg-white px-4 py-4 md:px-6">
-          <div className="flex items-end gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3 shadow-inner">
-            <textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder={`Message ${peerName}...`}
-              rows={2}
-              className="min-h-[48px] flex-1 resize-none bg-transparent text-sm outline-none placeholder:text-slate-400"
-            />
-            <button
-              type="submit"
-              className="rounded-full bg-blue-600 px-5 py-2 text-sm font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-              disabled={!draft.trim()}
-            >
-              Send
-            </button>
-          </div>
-        </form>
+          <form onSubmit={handleSend} className="chat-composer">
+            <div className="composer">
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder={`Message ${peerName}...`}
+                rows={2}
+                className="textarea"
+              />
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={!draft.trim() || !privateKey || !peerPublicKey}
+              >
+                Send
+              </button>
+            </div>
+          </form>
+          <form onSubmit={handleFileSend} className="chat-composer">
+            <div className="composer">
+              <input className="field" type="file" onChange={(event) => setSelectedFile(event.target.files?.[0] || null)} disabled={sendingFile || !privateKey || !peerPublicKey} />
+              <button type="submit" className="btn btn-secondary" disabled={!selectedFile || sendingFile || !privateKey || !peerPublicKey}>
+                {sendingFile ? "Encrypting…" : "Send encrypted file"}
+              </button>
+            </div>
+          </form>
+        </section>
       </div>
     </div>
   );

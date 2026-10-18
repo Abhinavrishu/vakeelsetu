@@ -6,11 +6,18 @@ const roleEnum = pgEnum('role', ['client', 'lawyer']);
 // Users table
 const users = pgTable('users', {
   id: uuid('id').defaultRandom().primaryKey(),
+  username: varchar('username', { length: 255 }),
   name: varchar('name', { length: 255 }).notNull(),
   email: varchar('email', { length: 255 }).notNull().unique(),
+  passwordHash: varchar('password_hash', { length: 255 }),
   password: text('password').notNull(),
   role: roleEnum('role').notNull(),
+  emailVerified: timestamp('email_verified'),
+  image: text('image'),
+  phone: varchar('phone', { length: 255 }),
   profileImage: text('profile_image').default(''),
+  encryptionPublicKey: text('encryption_public_key').default(''),
+  encryptedPrivateKeyBackup: text('encrypted_private_key_backup').default(''),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

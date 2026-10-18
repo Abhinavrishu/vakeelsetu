@@ -1,6 +1,6 @@
 # ⚖️ VakeelSetu
 
-VakeelSetu is a lawyer-client real-time communication platform designed to simplify and modernize legal consultations. It offers features like video/audio calling and real-time chat using WebRTC and Socket.io.
+VakeelSetu is a lawyer-client real-time communication platform designed to simplify and modernize legal consultations through real-time chat.
 
 > 🚧 This project is under active development.
 
@@ -8,7 +8,6 @@ VakeelSetu is a lawyer-client real-time communication platform designed to simpl
 ## 🚀 Features (Planned & In Progress)
 
 - ✅ Real-time chat (Socket.io)
-- ✅ Video/audio calling (WebRTC)
 - 🔄 User login/register (client/lawyer)
 - 🔄 Lawyer profile system
 - 🔄 JWT-based authentication
@@ -17,7 +16,7 @@ VakeelSetu is a lawyer-client real-time communication platform designed to simpl
 
 | Layer    | Tech                     |
 |----------|--------------------------|
-| Frontend | React, WebRTC, Context API |
+| Frontend | React, Context API |
 | Backend  | Node.js, Express, Socket.io |
 | Future   | MongoDB, JWT Auth, REST APIs |
 ## 💻 Getting Started
